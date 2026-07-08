@@ -1,0 +1,23 @@
+name: SSPanel Auto Checkin
+
+on:
+  schedule:
+    # 每天北京时间早上 8:00 自动运行 (UTC 0:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 支持手动触发测试
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Run checkin script
+        env:
+          COOKIE: ${{ secrets.COOKIE }}
+        run: |
+          curl -s -X POST "https://3j.wj-kc.com/user/checkin" \
+            -H "cookie: $COOKIE" \
+            -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "referer: https://3j.wj-kc.com/user"
