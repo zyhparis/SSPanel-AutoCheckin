@@ -2,51 +2,133 @@ name: SSPanel Auto Checkin
 
 on:
   schedule:
-    # 设定在北京时间每天 07:43 触发 (UTC 23:43)
-    - cron: '43 23 * * *'
-  workflow_dispatch: # 支持手动触发测试
+    # 北京时间 07:00~08:55，每 5 分钟触发一次 (UTC 23:00~00:55)
+    - cron: "*/5 23 * * *"
+    - cron: "*/5 0 * * *"
+  workflow_dispatch:
 
 jobs:
   checkin:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run checkin
+      - name: Randomized Checkin
         env:
           COOKIE: ${{ secrets.COOKIE }}
-          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+
         run: |
-          # 0~3 秒微调延迟
-          RANDOM_SEC=$(( RANDOM % 4 ))
-          echo "微调等待 $RANDOM_SEC 秒..."
+          ########################################
+          # 1. 环境依赖检测
+          ########################################
+          if ! command -v jq >/dev/null 2>&1; then
+              echo "❌ 错误: 环境缺失 jq 工具！"
+              exit 1
+          fi
+
+          ########################################
+          # 2. 计算北京时间与 UTC Slot (完全解耦 timezone)
+          ########################################
+          BJ_DATE=$(date -u -d '+8 hour' +%F)
+          UTC_HOUR=$(date -u +%H)
+          UTC_MIN=$(date -u +%M)
+
+          # 计算 Slot (UTC 23 点对应前半段 0~11，00 点对应后半段 12~23)
+          if [ "$UTC_HOUR" = "23" ]; then
+              CURRENT_SLOT=$(( UTC_MIN / 5 ))
+          else
+              CURRENT_SLOT=$(( 12 + UTC_MIN / 5 ))
+          fi
+
+          # 基于北京时间日期哈希锁定当天唯一的 Slot (0~23)
+          HASH=$(echo -n "$BJ_DATE" | sha256sum | awk '{print $1}')
+          SLOT=$(( 16#${HASH:0:2} % 24 ))
+
+          echo "Today (BJ)   : $BJ_DATE"
+          echo "Today Slot   : $SLOT"
+          echo "Current Slot : $CURRENT_SLOT"
+
+          ########################################
+          # 3. 判断当前是否到达当天的随机 Slot 窗口
+          ########################################
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+              if [ "$CURRENT_SLOT" -ne "$SLOT" ]; then
+                  echo "当前不是今天的签到时间点，顺畅退出。"
+                  exit 0
+              fi
+          fi
+
+          ########################################
+          # 4. 0~120 秒秒级随机微调
+          ########################################
+          RANDOM_SEC=$(( RANDOM % 121 ))
+          echo "🎲 命中签到时间！随机等待 $RANDOM_SEC 秒..."
           sleep $RANDOM_SEC
-          
-          # 发送真实 API 签到请求
-          RESPONSE=$(curl -s -X POST "https://ug.wj-kc.com/api/user/sign_use" \
+
+          ########################################
+          # 5. 调用 API 签到接口 (--fail-with-body 保留 HTTP 错误响应体)
+          ########################################
+          RESPONSE=$(curl \
+            --silent \
+            --show-error \
+            --fail-with-body \
+            --max-time 30 \
+            -X POST "https://ug.wj-kc.com/api/user/sign_use" \
             -H "cookie: $COOKIE" \
             -H "accept: application/json, text/plain, */*" \
             -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
-            -H "referer: https://3j.wj-kc.com/user")
-            
-          echo "接口原始返回: $RESPONSE"
-          
-          # 1. 解码加密的 data 数据，方便在日志里看清实际返回了什么
+            -H "referer: https://3j.wj-kc.com/user" 2>&1)
+
+          CURL_EXIT=$?
+          if [ $CURL_EXIT -ne 0 ]; then
+              echo "======================================"
+              echo "❌ curl 请求网络/HTTP级别失败！退出码：$CURL_EXIT"
+              echo "响应内容：$RESPONSE"
+              echo "======================================"
+              exit 1
+          fi
+
+          ########################################
+          # 6. Base64 解码提取 Payload
+          ########################################
           DECODED_DATA=$(echo "$RESPONSE" | grep -oP '"data":"\K[^"]+' | base64 -d 2>/dev/null || true)
+
+          ########################################
+          # 7. 精准解析 code 与 msg（严谨匹配，无猜测）
+          ########################################
+          SUCCESS=false
+
           if [ -n "$DECODED_DATA" ]; then
-            echo "解密后的真实响应: $DECODED_DATA"
+              CODE=$(echo "$DECODED_DATA" | jq -r '.code // empty')
+              MSG=$(echo "$DECODED_DATA" | jq -r '.msg // empty')
+
+              echo "解析到响应 -> CODE: $CODE | MSG: $MSG"
+
+              # 已验证：今日已签到
+              if [[ "$CODE" == "1028" ]] || [[ "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
+                  SUCCESS=true
+              # 未验证：首签成功状态码（拿到首签日志后在此处补充 elif 分支）
+              # elif [[ "$CODE" == "待填" ]] || [[ "$MSG" == "待填" ]]; then
+              #     SUCCESS=true
+              fi
           fi
-          
-          # 2. 核心结果判断：只要返回了 Base64 加密包 "data"、或者明文 "msg"/"code"/"ret" 都算连通正常！
-          if [[ "$RESPONSE" == *"\"data\":"* ]] || [[ "$RESPONSE" == *"msg"* ]] || [[ "$RESPONSE" == *"code"* ]]; then
-            echo "签到脚本已正常执行完毕！"
-          else
-            echo "签到异常！网络错误或 Cookie 完全失效！"
-            if [ -n "$DINGTALK_WEBHOOK" ]; then
-              curl -H "Content-Type: application/json" \
-                   -d "{\"msgtype\": \"text\", \"text\": {\"content\": \"【签到失败提醒】机场自动签到未成功，响应信息：$RESPONSE\"}}" \
-                   "$DINGTALK_WEBHOOK"
-            fi
-            exit 1
+
+          ########################################
+          # 8. 执行结果分支与排查日志输出
+          ########################################
+          if [ "$SUCCESS" = true ]; then
+              echo "✅ 今日签到成功 / 已处于已签到状态"
+              exit 0
           fi
+
+          echo "======================================"
+          echo "❌ 签到未通过（触发了未知 CODE 或 Cookie 失效）"
+          echo "CODE    : $CODE"
+          echo "MSG     : $MSG"
+          echo "DECODED : $DECODED_DATA"
+          echo "RAW     : $RESPONSE"
+          echo "======================================"
+
+          exit 1
