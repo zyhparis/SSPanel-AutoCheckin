@@ -2,9 +2,10 @@ name: SSPanel Auto Checkin
 
 on:
   schedule:
-    # 设定在北京时间早上 7:00 触发（UTC 23:00）
-    - cron: '0 23 * * *'
-  workflow_dispatch:
+    # 设定在北京时间 7:43 触发 (UTC 23:43)
+    # 上线后你可以把 43 改成任意你喜欢的分钟数（0~59）
+    - cron: '43 23 * * *'
+  workflow_dispatch: # 保留此项，支持随时手动测试
 
 jobs:
   checkin:
@@ -13,16 +14,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Random delay & Run checkin
+      - name: Run checkin
         env:
           COOKIE: ${{ secrets.COOKIE }}
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
-          # 使用纯 Bash 逻辑计算随机数（目前测试设为 0~10 秒，上线请改为 7200）
-          MAX_DELAY=10
-          RANDOM_DELAY=$(( RANDOM % MAX_DELAY ))
-          echo "随机等待时间: $RANDOM_DELAY 秒"
-          sleep $RANDOM_DELAY
+          # 测试阶段：秒级微调设为 0~3 秒，测试更快
+          RANDOM_SEC=$(( RANDOM % 4 ))
+          echo "微调等待 $RANDOM_SEC 秒..."
+          sleep $RANDOM_SEC
           
           # 发送签到请求
           RESPONSE=$(curl -s -X POST "https://3j.wj-kc.com/user/checkin" \
