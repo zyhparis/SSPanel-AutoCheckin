@@ -3,7 +3,6 @@ name: SSPanel Auto Checkin
 on:
   schedule:
     # 设定在北京时间每天 07:43 触发 (UTC 23:43)
-    # 处的 43 可以随意改为你喜欢的 0~59 分钟数
     - cron: '43 23 * * *'
   workflow_dispatch: # 支持手动触发测试
 
@@ -31,13 +30,19 @@ jobs:
             -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
             -H "referer: https://3j.wj-kc.com/user")
             
-          echo "接口返回结果: $RESPONSE"
+          echo "接口原始返回: $RESPONSE"
           
-          # 判断响应格式（只要包含 msg、code、ret 或包含成功/签到字样均判定通过）
-          if [[ "$RESPONSE" == *"msg"* ]] || [[ "$RESPONSE" == *"code"* ]] || [[ "$RESPONSE" == *"ret"* ]] || [[ "$RESPONSE" == *"成功"* ]] || [[ "$RESPONSE" == *"签到"* ]]; then
-            echo "签到脚本已正常执行"
+          # 1. 解码加密的 data 数据，方便在日志里看清实际返回了什么
+          DECODED_DATA=$(echo "$RESPONSE" | grep -oP '"data":"\K[^"]+' | base64 -d 2>/dev/null || true)
+          if [ -n "$DECODED_DATA" ]; then
+            echo "解密后的真实响应: $DECODED_DATA"
+          fi
+          
+          # 2. 核心结果判断：只要返回了 Base64 加密包 "data"、或者明文 "msg"/"code"/"ret" 都算连通正常！
+          if [[ "$RESPONSE" == *"\"data\":"* ]] || [[ "$RESPONSE" == *"msg"* ]] || [[ "$RESPONSE" == *"code"* ]]; then
+            echo "签到脚本已正常执行完毕！"
           else
-            echo "签到异常！"
+            echo "签到异常！网络错误或 Cookie 完全失效！"
             if [ -n "$DINGTALK_WEBHOOK" ]; then
               curl -H "Content-Type: application/json" \
                    -d "{\"msgtype\": \"text\", \"text\": {\"content\": \"【签到失败提醒】机场自动签到未成功，响应信息：$RESPONSE\"}}" \
