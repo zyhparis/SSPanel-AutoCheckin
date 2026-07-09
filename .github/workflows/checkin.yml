@@ -1,49 +1,86 @@
 name: SSPanel Auto Checkin
 
+
+
 on:
+
   schedule:
+
     # 设定在北京时间早上 7:00 触发（UTC 23:00）
+
     - cron: '0 23 * * *'
-  workflow_dispatch: # 支持手动触发测试
+
+  workflow_dispatch:
+
+
 
 jobs:
+
   checkin:
+
     runs-on: ubuntu-latest
+
     steps:
+
       - name: Checkout repository
+
         uses: actions/checkout@v4
 
+
+
       - name: Random delay & Run checkin
+
         env:
+
           COOKIE: ${{ secrets.COOKIE }}
+
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+
         run: |
-          # 1. 生成 0 到 7200 秒（0~2小时）之间的随机数并等待
-          RANDOM_DELAY=$((RANDOM % 7200))
-          echo "随机等待时间: $RANDOM_DELAY 秒"
-          sleep $RANDOM_DELAY
+
+          # 使用 Python 精准生成 0~7200 秒（0~2小时）随机延迟
+
+          python3 -c "import random, time; delay = random.randint(0, 10); print(f'随机等待 {delay} 秒...'); time.sleep(delay)"
+
           
-          # 2. 发送签到请求并捕获接口返回内容
+
+          # 发送签到请求
+
           RESPONSE=$(curl -s -X POST "https://3j.wj-kc.com/user/checkin" \
+
             -H "cookie: $COOKIE" \
+
             -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
+
             -H "referer: https://3j.wj-kc.com/user")
+
             
+
           echo "接口返回结果: $RESPONSE"
+
           
-          # 3. 判断返回结果是否正常（SSPanel 成功/重复签到通常包含 msg 或 ret）
+
+          # 判断签到结果
+
           if [[ "$RESPONSE" == *"msg"* ]] || [[ "$RESPONSE" == *"ret"* ]]; then
+
             echo "签到脚本已正常执行"
+
           else
+
             echo "签到异常！"
-            
-            # 如果你在 Secrets 里配置了 DINGTALK_WEBHOOK，这里会发钉钉
+
             if [ -n "$DINGTALK_WEBHOOK" ]; then
+
               curl -H "Content-Type: application/json" \
+
                    -d "{\"msgtype\": \"text\", \"text\": {\"content\": \"【签到失败提醒】机场自动签到未成功，响应信息：$RESPONSE\"}}" \
+
                    "$DINGTALK_WEBHOOK"
+
             fi
-            
-            # 【关键】抛出错误，强行让 GitHub Actions 显示红色 Failed，从而触发 Foxmail 邮件告警！
+
             exit 1
-          fi
+
+          fi 
+
