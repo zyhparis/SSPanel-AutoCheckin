@@ -97,13 +97,13 @@ jobs:
               echo "CODE : $CODE"
               echo "MSG  : $MSG"
 
-              # 已验证：今日已签到（收紧为极度安全的 AND 逻辑）
+              # 已验证：今日已签到（严格的 AND 校验）
               if [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
                   SUCCESS=true
               
-              # 待验证：首签成功状态码（明天拿到第一次失败日志后，解开下面两行的注释并回填真实返回值）
-              # elif [[ "$CODE" == "xxxx" && "$MSG" == "xxxx" ]]; then
-              #     SUCCESS=true
+              # 已验证：首签成功状态码（严格的 AND 校验）
+              elif [[ "$CODE" == "0" && "$MSG" == "SUCCESS" ]]; then
+                  SUCCESS=true
               fi
 
           fi
