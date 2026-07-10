@@ -2,9 +2,12 @@ name: SSPanel Auto Checkin
 
 on:
   schedule:
-    # 北京时间 07:00~08:55，每 5 分钟触发一次 (UTC 23:00~00:55)
-    - cron: "*/5 23 * * *"
-    - cron: "*/5 0 * * *"
+    # 每天下午触发两次，完美踩中全球 Actions 流量的最低谷时段
+    # 北京时间 13:43（UTC 05:43）
+    - cron: "43 5 * * *"
+    # 北京时间 14:18（UTC 06:18）
+    - cron: "18 6 * * *"
+
   workflow_dispatch:
 
 jobs:
@@ -24,52 +27,33 @@ jobs:
           # 1. 环境依赖检测
           ########################################
           if ! command -v jq >/dev/null 2>&1; then
-              echo "❌ 错误: 环境缺失 jq 工具！"
+              echo "❌ jq 未安装"
               exit 1
           fi
 
           ########################################
-          # 2. 计算北京时间与 UTC Slot (完全解耦 timezone)
+          # 2. 打印启动时间
           ########################################
-          BJ_DATE=$(date -u -d '+8 hour' +%F)
-          UTC_HOUR=$(date -u +%H)
-          UTC_MIN=$(date -u +%M)
-
-          # 计算 Slot (UTC 23 点对应前半段 0~11，00 点对应后半段 12~23)
-          if [ "$UTC_HOUR" = "23" ]; then
-              CURRENT_SLOT=$(( UTC_MIN / 5 ))
-          else
-              CURRENT_SLOT=$(( 12 + UTC_MIN / 5 ))
-          fi
-
-          # 基于北京时间日期哈希锁定当天唯一的 Slot (0~23)
-          HASH=$(echo -n "$BJ_DATE" | sha256sum | awk '{print $1}')
-          SLOT=$(( 16#${HASH:0:2} % 24 ))
-
-          echo "Today (BJ)   : $BJ_DATE"
-          echo "Today Slot   : $SLOT"
-          echo "Current Slot : $CURRENT_SLOT"
+          echo "北京时间启动：$(date -u -d '+8 hour' '+%F %T')"
 
           ########################################
-          # 3. 判断当前是否到达当天的随机 Slot 窗口
+          # 3. 定时任务随机等待（手动执行不等待）
           ########################################
           if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
-              if [ "$CURRENT_SLOT" -ne "$SLOT" ]; then
-                  echo "当前不是今天的签到时间点，顺畅退出。"
-                  exit 0
-              fi
+              RANDOM_DELAY=$(( RANDOM % 301 ))
+              TARGET_TIME=$(date -u -d "+8 hour +${RANDOM_DELAY} seconds" "+%F %T")
+
+              echo "随机等待：${RANDOM_DELAY} 秒"
+              echo "预计签到时间：$TARGET_TIME"
+
+              sleep "$RANDOM_DELAY"
           fi
 
           ########################################
-          # 4. 0~120 秒秒级随机微调
+          # 4. 调用签到接口（打印真实发包时间）
           ########################################
-          RANDOM_SEC=$(( RANDOM % 121 ))
-          echo "🎲 命中签到时间！随机等待 $RANDOM_SEC 秒..."
-          sleep $RANDOM_SEC
+          echo "北京时间请求发送：$(date -u -d '+8 hour' '+%F %T')"
 
-          ########################################
-          # 5. 调用 API 签到接口 (--fail-with-body 保留 HTTP 错误响应体)
-          ########################################
           RESPONSE=$(curl \
             --silent \
             --show-error \
@@ -79,56 +63,72 @@ jobs:
             -H "cookie: $COOKIE" \
             -H "accept: application/json, text/plain, */*" \
             -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
-            -H "referer: https://3j.wj-kc.com/user" 2>&1)
+            -H "referer: https://3j.wj-kc.com/user" \
+            2>&1)
 
           CURL_EXIT=$?
+
           if [ $CURL_EXIT -ne 0 ]; then
               echo "======================================"
-              echo "❌ curl 请求网络/HTTP级别失败！退出码：$CURL_EXIT"
-              echo "响应内容：$RESPONSE"
+              echo "❌ curl 请求失败"
+              echo "退出码：$CURL_EXIT"
+              echo "$RESPONSE"
               echo "======================================"
               exit 1
           fi
 
           ########################################
-          # 6. Base64 解码提取 Payload
+          # 5. Base64 解码
           ########################################
           DECODED_DATA=$(echo "$RESPONSE" | grep -oP '"data":"\K[^"]+' | base64 -d 2>/dev/null || true)
 
-          ########################################
-          # 7. 精准解析 code 与 msg（严谨匹配，无猜测）
-          ########################################
           SUCCESS=false
+          CODE=""
+          MSG=""
 
+          ########################################
+          # 6. 解析状态码
+          ########################################
           if [ -n "$DECODED_DATA" ]; then
+
               CODE=$(echo "$DECODED_DATA" | jq -r '.code // empty')
               MSG=$(echo "$DECODED_DATA" | jq -r '.msg // empty')
 
-              echo "解析到响应 -> CODE: $CODE | MSG: $MSG"
+              echo "CODE : $CODE"
+              echo "MSG  : $MSG"
 
-              # 已验证：今日已签到
-              if [[ "$CODE" == "1028" ]] || [[ "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
+              # 已验证：今日已签到（收紧为极度安全的 AND 逻辑）
+              if [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
                   SUCCESS=true
-              # 未验证：首签成功状态码（拿到首签日志后在此处补充 elif 分支）
-              # elif [[ "$CODE" == "待填" ]] || [[ "$MSG" == "待填" ]]; then
+              
+              # 待验证：首签成功状态码（明天拿到第一次失败日志后，解开下面两行的注释并回填真实返回值）
+              # elif [[ "$CODE" == "xxxx" && "$MSG" == "xxxx" ]]; then
               #     SUCCESS=true
               fi
+
           fi
 
           ########################################
-          # 8. 执行结果分支与排查日志输出
+          # 7. 成功分支
           ########################################
           if [ "$SUCCESS" = true ]; then
-              echo "✅ 今日签到成功 / 已处于已签到状态"
+              echo "✅ 今日签到成功 / 已签到"
               exit 0
           fi
 
+          ########################################
+          # 8. 输出完整排查日志
+          ########################################
           echo "======================================"
-          echo "❌ 签到未通过（触发了未知 CODE 或 Cookie 失效）"
-          echo "CODE    : $CODE"
-          echo "MSG     : $MSG"
-          echo "DECODED : $DECODED_DATA"
-          echo "RAW     : $RESPONSE"
+          echo "❌ 未识别状态（可能是首签或 Cookie 失效）"
+          echo "CODE     : $CODE"
+          echo "MSG      : $MSG"
+          echo
+          echo "DECODED:"
+          echo "$DECODED_DATA"
+          echo
+          echo "RAW:"
+          echo "$RESPONSE"
           echo "======================================"
 
           exit 1
