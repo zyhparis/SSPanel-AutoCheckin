@@ -2,406 +2,228 @@ name: SSPanel Auto Checkin
 
 on:
   schedule:
-    # 北京时间 13:43
-    - cron: "43 5 * * *"
-
-    # 北京时间 14:18
-    - cron: "18 6 * * *"
+    # 北京时间 13:35（UTC 05:35）
+    - cron: "35 5 * * *"
+    # 北京时间 14:05（UTC 06:05）
+    - cron: "5 6 * * *"
+    # 北京时间 14:25（UTC 06:25）
+    - cron: "25 6 * * *"
 
   workflow_dispatch:
 
-
 jobs:
   checkin:
-
     runs-on: ubuntu-latest
 
-
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v5
 
-
-
       - name: Checkin Multi-Account & Process Results
-
         id: checkin_process
-
         env:
           COOKIES: ${{ secrets.COOKIE }}
-
         run: |
-
-
           ########################################
-          # 环境检测
+          # 1. 环境检测
           ########################################
-
-
           if ! command -v jq >/dev/null 2>&1; then
               echo "❌ jq 未安装"
               exit 1
           fi
-
 
           if [ -z "$COOKIES" ]; then
               echo "❌ 未检测到 COOKIE 配置"
               exit 1
           fi
 
-
-          echo "北京时间启动：$(date -u -d '+8 hour' '+%F %T')"
-
-
+          EXEC_TIME=$(date -u -d '+8 hour' '+%Y-%m-%d %H:%M:%S')
+          echo "current_time=$EXEC_TIME" >> $GITHUB_OUTPUT
+          echo "北京时间启动：$EXEC_TIME"
 
           ########################################
-          # 随机等待
+          # 2. 短随机延迟，避免固定时间集中请求（0 - 5 分钟微调）
           ########################################
-
-
           if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
-
               RANDOM_DELAY=$(( RANDOM % 301 ))
-
               TARGET_TIME=$(date -u -d "+8 hour +${RANDOM_DELAY} seconds" "+%F %T")
-
               echo "随机等待：${RANDOM_DELAY} 秒"
-
               echo "预计签到时间：$TARGET_TIME"
-
               sleep "$RANDOM_DELAY"
-
           fi
 
-
-
-
           ########################################
-          # 循环签到
+          # 3. 循环签到（含重试 + 账号间 1-3 分钟安全间隔）
           ########################################
-
-
           FAILED_ACCOUNTS=""
-
           TOTAL_COUNT=0
 
           LOG_FILE="failed_details.log"
-
           > "$LOG_FILE"
 
-
-
-          while IFS= read -r line || [ -n "$line" ];
-
-          do
-
-
+          while IFS= read -r line || [ -n "$line" ]; do
               [ -z "$line" ] && continue
-
-
               line=$(echo "$line" | tr -d '\r')
 
-
-
               ACCOUNT_NAME=$(echo "$line" | awk -F '####' '{print $1}')
-
               COOKIE_VAL=$(echo "$line" | awk -F '####' '{print $2}')
 
-
-
               if [ -z "$COOKIE_VAL" ]; then
-
                   COOKIE_VAL="$ACCOUNT_NAME"
-
                   ACCOUNT_NAME="账号_$((TOTAL_COUNT+1))"
-
               fi
-
-
 
               TOTAL_COUNT=$((TOTAL_COUNT+1))
 
-
-
+              # 账号间插入 1 ~ 3 分钟（60 ~ 180 秒）安全等待间隔
               if [ $TOTAL_COUNT -gt 1 ]; then
-
-                  INTERVAL=$((3 + RANDOM % 6))
-
-                  echo "等待 ${INTERVAL} 秒后处理下一个账号..."
-
+                  INTERVAL=$(( 60 + RANDOM % 121 ))
+                  echo "--------------------------------------"
+                  echo "⏳ 账号处理间隔，等待 ${INTERVAL} 秒（约 $((INTERVAL/60)) 分钟）后处理下一个账号..."
                   sleep "$INTERVAL"
-
               fi
-
-
 
               echo "--------------------------------------"
-
               echo "🚀 开始处理 ${ACCOUNT_NAME}..."
 
-              echo "北京时间请求发送：$(date -u -d '+8 hour' '+%F %T')"
-
-
-
-              ########################################
-              # 请求
-              ########################################
-
-
-              RESPONSE_FILE=$(mktemp)
-
-
-
-              HTTP_CODE=$(curl \
-                --silent \
-                --show-error \
-                --max-time 30 \
-                -w "%{http_code}" \
-                -o "$RESPONSE_FILE" \
-                -X POST "https://ug.wj-kc.com/api/user/sign_use" \
-                -H "cookie: $COOKIE_VAL" \
-                -H "accept: application/json, text/plain, */*" \
-                -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
-                -H "referer: https://3j.wj-kc.com/user"
-              )
-
-
-              CURL_EXIT=$?
-
-
-              RESPONSE=$(cat "$RESPONSE_FILE")
-
-              rm -f "$RESPONSE_FILE"
-
-
-
-              echo "HTTP状态码: $HTTP_CODE"
-
-              echo "原始返回: $RESPONSE"
-
-
-
-              if [ $CURL_EXIT -ne 0 ]; then
-
-                  echo "❌ ${ACCOUNT_NAME} curl异常"
-
-                  FAILED_ACCOUNTS="${FAILED_ACCOUNTS} ${ACCOUNT_NAME}"
-
-
-                  echo "### ${ACCOUNT_NAME} curl异常" >> "$LOG_FILE"
-
-                  echo "curl退出码: $CURL_EXIT" >> "$LOG_FILE"
-
-                  echo "HTTP状态码: $HTTP_CODE" >> "$LOG_FILE"
-
-                  echo "返回内容: $RESPONSE" >> "$LOG_FILE"
-
-                  echo "" >> "$LOG_FILE"
-
-
-                  continue
-
-              fi
-
-
-
-
-
-              ########################################
-              # 解析返回
-              ########################################
-
-
-              DECODED_DATA=$(echo "$RESPONSE" \
-                | grep -oP '"data":"\K[^"]+' \
-                | base64 -d 2>/dev/null || true)
-
-
-
-              SUCCESS=false
-
-              CODE=""
-
-              MSG=""
-
-
-
-              if [ -n "$DECODED_DATA" ]; then
-
-
-                  CODE=$(echo "$DECODED_DATA" | jq -r '.code // empty')
-
-                  MSG=$(echo "$DECODED_DATA" | jq -r '.msg // empty')
-
-
-
-                  echo "CODE : $CODE"
-
-                  echo "MSG  : $MSG"
-
-
-
-                  if [[ "$CODE" == "0" && "$MSG" == "SUCCESS" ]]; then
-
-                      SUCCESS=true
-
-
-                  elif [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
-
-                      SUCCESS=true
-
-
-                  elif [[ "$CODE" == "1041" && "$MSG" == "CAN_NOT_SIGNUSE" ]]; then
-
-                      SUCCESS=true
-
+              ACCOUNT_SUCCESS=false
+              LAST_ERROR=""
+
+              # 最多重试 2 次（首次 + 1 次重试）
+              for attempt in 1 2; do
+                  if [ $attempt -eq 2 ]; then
+                      RETRY_DELAY=$(( 60 + RANDOM % 31 ))
+                      echo "⚠️ ${ACCOUNT_NAME} 第 1 次请求未达成成功状态，等待 ${RETRY_DELAY} 秒（60-90秒）后执行第 2 次重试..."
+                      sleep "$RETRY_DELAY"
+                      echo "🔄 开始对 ${ACCOUNT_NAME} 进行重试请求..."
                   fi
 
+                  echo "北京时间请求发送：$(date -u -d '+8 hour' '+%F %T')"
 
+                  RESPONSE_FILE=$(mktemp)
 
+                  HTTP_CODE=$(curl \
+                    --silent \
+                    --show-error \
+                    --max-time 30 \
+                    -w "%{http_code}" \
+                    -o "$RESPONSE_FILE" \
+                    -X POST "https://ug.wj-kc.com/api/user/sign_use" \
+                    -H "cookie: $COOKIE_VAL" \
+                    -H "accept: application/json, text/plain, */*" \
+                    -H "content-type: application/json;charset=UTF-8" \
+                    -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
+                    -H "origin: https://3j.wj-kc.com" \
+                    -H "referer: https://3j.wj-kc.com/user" \
+                    -d '{}'
+                  )
+
+                  CURL_EXIT=$?
+                  RESPONSE=$(cat "$RESPONSE_FILE")
+                  rm -f "$RESPONSE_FILE"
+
+                  echo "HTTP状态码: $HTTP_CODE"
+                  echo "原始返回: $RESPONSE"
+
+                  if [ $CURL_EXIT -ne 0 ]; then
+                      LAST_ERROR="curl异常退出（退出码：$CURL_EXIT，HTTP状态码：$HTTP_CODE）"
+                      echo "❌ ${ACCOUNT_NAME} curl 异常 (退出码: $CURL_EXIT)"
+                      continue
+                  fi
+
+                  ########################################
+                  # 解析返回数据
+                  ########################################
+                  DECODED_DATA=$(echo "$RESPONSE" \
+                    | grep -oP '"data":"\K[^"]+' \
+                    | base64 -d 2>/dev/null || true)
+
+                  CODE=""
+                  MSG=""
+
+                  if [ -n "$DECODED_DATA" ]; then
+                      CODE=$(echo "$DECODED_DATA" | jq -r '.code // empty')
+                      MSG=$(echo "$DECODED_DATA" | jq -r '.msg // empty')
+
+                      echo "CODE : $CODE"
+                      echo "MSG  : $MSG"
+
+                      # 精准匹配：CODE 与 MSG 必须同时满足条件
+                      if [[ "$CODE" == "0" && "$MSG" == "SUCCESS" ]] \
+                      || [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]] \
+                      || [[ "$CODE" == "1041" && "$MSG" == "CAN_NOT_SIGNUSE" ]]; then
+                          ACCOUNT_SUCCESS=true
+                          LAST_ERROR=""
+                          break # 校验通过，直接跳出重试循环
+                      else
+                          LAST_ERROR="业务状态码不符合预期（CODE: $CODE, MSG: $MSG）"
+                      fi
+                  else
+                      echo "⚠️ 没有解析到 data 字段"
+                      LAST_ERROR="响应数据无法解密或未包含 data 字段"
+                  fi
+              done
+
+              if [ "$ACCOUNT_SUCCESS" = true ]; then
+                  echo "✅ ${ACCOUNT_NAME} 处理完成（签到成功 / 已签到）"
               else
-
-                  echo "⚠️ 没有解析到 data 字段"
-
-              fi
-
-
-
-
-
-              if [ "$SUCCESS" = true ]; then
-
-
-                  echo "✅ ${ACCOUNT_NAME} 今日签到成功 / 已签到"
-
-
-              else
-
-
-                  echo "❌ ${ACCOUNT_NAME} 签到失败/未知状态"
-
-
+                  echo "❌ ${ACCOUNT_NAME} 最终签到失败"
                   FAILED_ACCOUNTS="${FAILED_ACCOUNTS} ${ACCOUNT_NAME}"
 
-
                   echo "### ${ACCOUNT_NAME} 状态异常" >> "$LOG_FILE"
-
-                  echo "HTTP: $HTTP_CODE" >> "$LOG_FILE"
-
+                  echo "错误追踪: $LAST_ERROR" >> "$LOG_FILE"
+                  echo "HTTP 状态码: $HTTP_CODE" >> "$LOG_FILE"
                   echo "CODE: $CODE" >> "$LOG_FILE"
-
                   echo "MSG: $MSG" >> "$LOG_FILE"
-
                   echo "解码数据: $DECODED_DATA" >> "$LOG_FILE"
-
                   echo "原始返回: $RESPONSE" >> "$LOG_FILE"
-
                   echo "" >> "$LOG_FILE"
-
-
               fi
-
-
 
           done < <(printf "%s\n" "$COOKIES")
 
-
-
-
-
           ########################################
-          # 输出结果
+          # 4. 输出结果与告警触发
           ########################################
-
-
           if [ -n "$FAILED_ACCOUNTS" ]; then
-
-
               echo "has_error=true" >> $GITHUB_OUTPUT
-
               echo "failed_accounts=$FAILED_ACCOUNTS" >> $GITHUB_OUTPUT
 
-
-
               LOG_CONTENT=$(cat "$LOG_FILE")
-
               {
-
                 echo "log_details<<EOF"
-
                 echo "$LOG_CONTENT"
-
                 echo "EOF"
-
-
               } >> $GITHUB_OUTPUT
 
-
-
               echo "⚠️ 以下账号异常：$FAILED_ACCOUNTS"
-
               exit 1
-
-
-
           else
-
-
               echo "has_error=false" >> $GITHUB_OUTPUT
-
               echo "🎉 所有账号签到成功！"
-
-
           fi
 
-
-
-
-
       ########################################
-      # 邮件提醒
+      # 5. 邮件提醒
       ########################################
-
-
       - name: Send Failure Notification Mail
-
         if: failure() && steps.checkin_process.outputs.has_error == 'true'
-
-
         uses: dawidd6/action-send-mail@v4
-
-
         with:
-
           server_address: smtp.qq.com
-
           server_port: 465
-
           secure: true
-
           username: ${{ secrets.MAIL_USERNAME }}
-
           password: ${{ secrets.MAIL_PASSWORD }}
-
           subject: "⚠️ SSPanel 签到异常提醒 - ${{ steps.checkin_process.outputs.failed_accounts }}"
-
           to: ${{ secrets.MAIL_TO }}
-
           from: "SSPanel 自动签到系统 <${{ secrets.MAIL_USERNAME }}>"
-
-
           body: |
+            SSPanel 自动签到异常通知
 
-            SSPanel 自动签到异常
+            执行时间：${{ steps.checkin_process.outputs.current_time }}
+            失败账号：${{ steps.checkin_process.outputs.failed_accounts }}
 
-
-            失败账号：
-
-            ${{ steps.checkin_process.outputs.failed_accounts }}
-
-
-
-            详细日志：
-
+            --------------------------------------------------
+            排查日志详情：
             ${{ steps.checkin_process.outputs.log_details }}
