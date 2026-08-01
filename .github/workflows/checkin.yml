@@ -4,6 +4,7 @@ on:
   schedule:
     # 北京时间 13:43
     - cron: "43 5 * * *"
+
     # 北京时间 14:18
     - cron: "18 6 * * *"
 
@@ -15,13 +16,16 @@ jobs:
 
     runs-on: ubuntu-latest
 
+
     steps:
 
       - name: Checkout repository
         uses: actions/checkout@v5
 
 
+
       - name: Checkin Multi-Account & Process Results
+
         id: checkin_process
 
         env:
@@ -29,9 +33,11 @@ jobs:
 
         run: |
 
+
           ########################################
-          # 1. 环境检测
+          # 环境检测
           ########################################
+
 
           if ! command -v jq >/dev/null 2>&1; then
               echo "❌ jq 未安装"
@@ -48,9 +54,11 @@ jobs:
           echo "北京时间启动：$(date -u -d '+8 hour' '+%F %T')"
 
 
+
           ########################################
-          # 2. 随机等待
+          # 随机等待
           ########################################
+
 
           if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
 
@@ -59,6 +67,7 @@ jobs:
               TARGET_TIME=$(date -u -d "+8 hour +${RANDOM_DELAY} seconds" "+%F %T")
 
               echo "随机等待：${RANDOM_DELAY} 秒"
+
               echo "预计签到时间：$TARGET_TIME"
 
               sleep "$RANDOM_DELAY"
@@ -66,14 +75,16 @@ jobs:
           fi
 
 
+
+
           ########################################
-          # 3. 循环签到
+          # 循环签到
           ########################################
+
 
           FAILED_ACCOUNTS=""
 
           TOTAL_COUNT=0
-
 
           LOG_FILE="failed_details.log"
 
@@ -85,10 +96,12 @@ jobs:
 
           do
 
+
               [ -z "$line" ] && continue
 
 
               line=$(echo "$line" | tr -d '\r')
+
 
 
               ACCOUNT_NAME=$(echo "$line" | awk -F '####' '{print $1}')
@@ -117,7 +130,7 @@ jobs:
 
                   echo "等待 ${INTERVAL} 秒后处理下一个账号..."
 
-                  sleep $INTERVAL
+                  sleep "$INTERVAL"
 
               fi
 
@@ -132,7 +145,7 @@ jobs:
 
 
               ########################################
-              # curl 请求
+              # 请求
               ########################################
 
 
@@ -154,7 +167,6 @@ jobs:
               )
 
 
-
               CURL_EXIT=$?
 
 
@@ -166,12 +178,16 @@ jobs:
 
               echo "HTTP状态码: $HTTP_CODE"
 
+              echo "原始返回: $RESPONSE"
+
+
 
               if [ $CURL_EXIT -ne 0 ]; then
 
                   echo "❌ ${ACCOUNT_NAME} curl异常"
 
                   FAILED_ACCOUNTS="${FAILED_ACCOUNTS} ${ACCOUNT_NAME}"
+
 
                   echo "### ${ACCOUNT_NAME} curl异常" >> "$LOG_FILE"
 
@@ -183,9 +199,12 @@ jobs:
 
                   echo "" >> "$LOG_FILE"
 
+
                   continue
 
               fi
+
+
 
 
 
@@ -240,13 +259,14 @@ jobs:
                   fi
 
 
+
               else
 
-                  echo "⚠️ 未解析到data字段"
-
-                  echo "原始返回: $RESPONSE"
+                  echo "⚠️ 没有解析到 data 字段"
 
               fi
+
+
 
 
 
@@ -288,8 +308,10 @@ jobs:
 
 
 
+
+
           ########################################
-          # 4. 输出结果
+          # 输出结果
           ########################################
 
 
@@ -304,14 +326,13 @@ jobs:
 
               LOG_CONTENT=$(cat "$LOG_FILE")
 
-
               {
 
-              echo "log_details<<EOF"
+                echo "log_details<<EOF"
 
-              echo "$LOG_CONTENT"
+                echo "$LOG_CONTENT"
 
-              echo "EOF"
+                echo "EOF"
 
 
               } >> $GITHUB_OUTPUT
@@ -323,15 +344,18 @@ jobs:
               exit 1
 
 
+
           else
 
 
-              echo "has_error=false" >> $GITHUB_OUTPUT"
+              echo "has_error=false" >> $GITHUB_OUTPUT
 
               echo "🎉 所有账号签到成功！"
 
 
           fi
+
+
 
 
 
@@ -342,7 +366,8 @@ jobs:
 
       - name: Send Failure Notification Mail
 
-        if: failure() && steps.checkin_process.outputs.has_error == 'true' && secrets.MAIL_TO != ''
+        if: failure() && steps.checkin_process.outputs.has_error == 'true'
+
 
         uses: dawidd6/action-send-mail@v4
 
@@ -370,9 +395,11 @@ jobs:
 
             SSPanel 自动签到异常
 
+
             失败账号：
 
             ${{ steps.checkin_process.outputs.failed_accounts }}
+
 
 
             详细日志：
