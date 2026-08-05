@@ -104,7 +104,7 @@ jobs:
                 --max-time 30 \
                 -w "%{http_code}" \
                 -o "$LOGIN_RESP_FILE" \
-                -X POST "https://ug.wj-kc.com/api/v1/passport/auth/login" \
+                -X POST "https://3j.wj-kc.com/api/user/login" \
                 -H "accept: application/json, text/plain, */*" \
                 -H "content-type: application/json;charset=UTF-8" \
                 -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
@@ -116,12 +116,14 @@ jobs:
               LOGIN_RESP=$(cat "$LOGIN_RESP_FILE")
               rm -f "$LOGIN_RESP_FILE"
 
-              # 解密返回的 Token
+              # 解密返回数据
               DECODED_LOGIN=$(echo "$LOGIN_RESP" | grep -oP '"data":"\K[^"]+' | base64 -d 2>/dev/null || true)
               AUTH_TOKEN=""
 
               if [ -n "$DECODED_LOGIN" ]; then
-                  AUTH_TOKEN=$(echo "$DECODED_LOGIN" | jq -r '.token // .data.token // empty')
+                  AUTH_TOKEN=$(echo "$DECODED_LOGIN" | jq -r '.token // .auth_data // .data.token // empty')
+              elif [[ "$LOGIN_RESP" =~ \{.*\} ]]; then
+                  AUTH_TOKEN=$(echo "$LOGIN_RESP" | jq -r '.token // .auth_data // .data.token // empty')
               fi
 
               if [ -z "$AUTH_TOKEN" ]; then
@@ -138,7 +140,7 @@ jobs:
                   continue
               fi
 
-              echo "✅ 登录成功！获取到临时 Token: ${AUTH_TOKEN:0:10}..."
+              echo "✅ 登录成功！获取到最新 Token: ${AUTH_TOKEN:0:12}..."
 
               ########################################
               # 阶段 B：使用刚获取的 Token 执行签到
@@ -154,7 +156,7 @@ jobs:
                 --max-time 30 \
                 -w "%{http_code}" \
                 -o "$CHECKIN_RESP_FILE" \
-                -X POST "https://ug.wj-kc.com/api/user/sign_use" \
+                -X POST "https://3j.wj-kc.com/api/user/sign_use" \
                 -H "cookie: $DYNAMIC_COOKIE" \
                 -H "accept: application/json, text/plain, */*" \
                 -H "content-type: application/json;charset=UTF-8" \
