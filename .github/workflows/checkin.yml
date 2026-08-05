@@ -1,4 +1,4 @@
-name: SSPanel Auto Login & Checkin
+name: SSPanel Auto Checkin Direct
 
 on:
   schedule:
@@ -19,21 +19,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Auto Login & Checkin
+      - name: Execute Checkin
         id: checkin_process
         env:
-          ACCOUNTS: ${{ secrets.ACCOUNTS }}
+          TOKENS: ${{ secrets.TOKENS }}
         run: |
-          ########################################
-          # 1. 环境检测
-          ########################################
           if ! command -v jq >/dev/null 2>&1; then
               echo "❌ jq 未安装"
               exit 1
           fi
 
-          if [ -z "$ACCOUNTS" ]; then
-              echo "❌ 未检测到 ACCOUNTS 配置"
+          if [ -z "$TOKENS" ]; then
+              echo "❌ 未检测到 TOKENS 配置"
               exit 1
           fi
 
@@ -41,23 +38,15 @@ jobs:
           echo "current_time=$EXEC_TIME" >> $GITHUB_OUTPUT
           echo "北京时间启动：$EXEC_TIME"
 
-          ########################################
-          # 2. 短随机延迟（0 - 5 分钟微调）
-          ########################################
+          # 短随机延迟（手动触发时不等待）
           if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
               RANDOM_DELAY=$(( RANDOM % 301 ))
-              TARGET_TIME=$(date -u -d "+8 hour +${RANDOM_DELAY} seconds" "+%F %T")
-              echo "随机等待：${RANDOM_DELAY} 秒"
-              echo "预计签到时间：$TARGET_TIME"
+              echo "随机等待：${RANDOM_DELAY} 秒..."
               sleep "$RANDOM_DELAY"
           fi
 
-          ########################################
-          # 3. 循环登录并签到
-          ########################################
           FAILED_ACCOUNTS=""
           TOTAL_COUNT=0
-
           LOG_FILE="failed_details.log"
           > "$LOG_FILE"
 
@@ -65,87 +54,26 @@ jobs:
               [ -z "$line" ] && continue
               line=$(echo "$line" | tr -d '\r')
 
-              ACCOUNT_NAME=$(echo "$line" | awk -F '####' '{print $1}')
-              EMAIL_VAL=$(echo "$line" | awk -F '####' '{print $2}')
-              RAW_PASSWORD=$(echo "$line" | awk -F '####' '{print $3}')
+              if [[ "$line" == *"####"* ]]; then
+                  ACCOUNT_NAME=$(echo "$line" | awk -F '####' '{print $1}')
+                  AUTH_TOKEN=$(echo "$line" | awk -F '####' '{print $2}')
+              else
+                  ACCOUNT_NAME="默认账号"
+                  AUTH_TOKEN="$line"
+              fi
 
               TOTAL_COUNT=$((TOTAL_COUNT+1))
 
-              # 账号间间隔 1-3 分钟
               if [ $TOTAL_COUNT -gt 1 ]; then
                   INTERVAL=$(( 60 + RANDOM % 121 ))
                   echo "--------------------------------------"
-                  echo "⏳ 账号处理间隔，等待 ${INTERVAL} 秒（约 $((INTERVAL/60)) 分钟）..."
+                  echo "⏳ 处理下一个账号，等待 ${INTERVAL} 秒..."
                   sleep "$INTERVAL"
               fi
 
               echo "--------------------------------------"
-              echo "🚀 开始处理 ${ACCOUNT_NAME} (${EMAIL_VAL})..."
-
-              # 计算密码的 32位小写 MD5 值
-              MD5_PASSWORD=$(echo -n "$RAW_PASSWORD" | md5sum | awk '{print $1}')
-
-              ACCOUNT_SUCCESS=false
-              LAST_ERROR=""
-
-              ########################################
-              # 阶段 A：调用登录 API 获取最新 Token
-              ########################################
-              echo "🔑 [1/2] 正在自动登录获取最新 Token..."
-
-              # 构建 payload 并 Base64 编码
-              LOGIN_PAYLOAD=$(jq -n --arg email "$EMAIL_VAL" --arg password "$MD5_PASSWORD" '{email: $email, password: $password}')
-              ENCODED_PAYLOAD=$(echo -n "$LOGIN_PAYLOAD" | base64 -w 0)
-
-              LOGIN_RESP_FILE=$(mktemp)
-              LOGIN_HTTP_CODE=$(curl \
-                --silent \
-                --show-error \
-                --max-time 30 \
-                -w "%{http_code}" \
-                -o "$LOGIN_RESP_FILE" \
-                -X POST "https://3j.wj-kc.com/api/user/login" \
-                -H "accept: application/json, text/plain, */*" \
-                -H "content-type: application/json;charset=UTF-8" \
-                -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
-                -H "origin: https://3j.wj-kc.com" \
-                -H "referer: https://3j.wj-kc.com/login" \
-                -d "{\"data\":\"$ENCODED_PAYLOAD\"}"
-              )
-
-              LOGIN_RESP=$(cat "$LOGIN_RESP_FILE")
-              rm -f "$LOGIN_RESP_FILE"
-
-              # 解密返回数据
-              DECODED_LOGIN=$(echo "$LOGIN_RESP" | grep -oP '"data":"\K[^"]+' | base64 -d 2>/dev/null || true)
-              AUTH_TOKEN=""
-
-              if [ -n "$DECODED_LOGIN" ]; then
-                  AUTH_TOKEN=$(echo "$DECODED_LOGIN" | jq -r '.token // .auth_data // .data.token // empty')
-              elif [[ "$LOGIN_RESP" =~ \{.*\} ]]; then
-                  AUTH_TOKEN=$(echo "$LOGIN_RESP" | jq -r '.token // .auth_data // .data.token // empty')
-              fi
-
-              if [ -z "$AUTH_TOKEN" ]; then
-                  echo "❌ ${ACCOUNT_NAME} 登录失败，未能获取 Token"
-                  echo "原始登录响应: $LOGIN_RESP"
-                  echo "解密登录响应: $DECODED_LOGIN"
-                  LAST_ERROR="登录失败，未返回 Token"
-                  FAILED_ACCOUNTS="${FAILED_ACCOUNTS} ${ACCOUNT_NAME}"
-
-                  echo "### ${ACCOUNT_NAME} 登录异常" >> "$LOG_FILE"
-                  echo "错误追踪: $LAST_ERROR" >> "$LOG_FILE"
-                  echo "HTTP 状态码: $LOGIN_HTTP_CODE" >> "$LOG_FILE"
-                  echo "" >> "$LOG_FILE"
-                  continue
-              fi
-
-              echo "✅ 登录成功！获取到最新 Token: ${AUTH_TOKEN:0:12}..."
-
-              ########################################
-              # 阶段 B：使用刚获取的 Token 执行签到
-              ########################################
-              echo "📝 [2/2] 正在发送签到请求..."
+              echo "🚀 开始处理 ${ACCOUNT_NAME}..."
+              echo "🔑 使用 Token: ${AUTH_TOKEN:0:12}..."
 
               DYNAMIC_COOKIE="channel_code=WJKCNOCODE; platform=Windows; token=$AUTH_TOKEN"
 
@@ -160,7 +88,7 @@ jobs:
                 -H "cookie: $DYNAMIC_COOKIE" \
                 -H "accept: application/json, text/plain, */*" \
                 -H "content-type: application/json;charset=UTF-8" \
-                -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0" \
+                -H "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
                 -H "origin: https://3j.wj-kc.com" \
                 -H "referer: https://3j.wj-kc.com/user" \
                 -d '{}'
@@ -169,67 +97,48 @@ jobs:
               CHECKIN_RESP=$(cat "$CHECKIN_RESP_FILE")
               rm -f "$CHECKIN_RESP_FILE"
 
-              DECODED_CHECKIN=$(echo "$CHECKIN_RESP" | grep -oP '"data":"\K[^"]+' | base64 -d 2>/dev/null || true)
+              DECODED_CHECKIN=$(echo "$CHECKIN_RESP" | grep -oP '"data":"\K[^"]+' | base64 -d 2>/dev/null || echo "$CHECKIN_RESP")
 
-              CODE=""
-              MSG=""
-              if [ -n "$DECODED_CHECKIN" ]; then
-                  CODE=$(echo "$DECODED_CHECKIN" | jq -r '.code // empty')
-                  MSG=$(echo "$DECODED_CHECKIN" | jq -r '.msg // empty')
+              CODE=$(echo "$DECODED_CHECKIN" | jq -r '.code // empty')
+              MSG=$(echo "$DECODED_CHECKIN" | jq -r '.msg // empty')
 
-                  echo "CODE : $CODE"
-                  echo "MSG  : $MSG"
+              echo "HTTP Code : $CHECKIN_HTTP_CODE"
+              echo "响应 Code  : $CODE"
+              echo "响应 Msg   : $MSG"
 
-                  if [[ "$CODE" == "0" && "$MSG" == "SUCCESS" ]] \
-                  || [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
-                      ACCOUNT_SUCCESS=true
-                  else
-                      LAST_ERROR="签到状态码不符预期（CODE: $CODE, MSG: $MSG）"
-                  fi
-              else
-                  LAST_ERROR="签到响应数据无法解密"
-              fi
-
-              if [ "$ACCOUNT_SUCCESS" = true ]; then
-                  echo "✅ ${ACCOUNT_NAME} 处理完成（签到成功 / 已签到）"
+              ACCOUNT_SUCCESS=false
+              if [[ "$CODE" == "0" && "$MSG" == "SUCCESS" ]] \
+              || [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
+                  ACCOUNT_SUCCESS=true
+                  echo "✅ ${ACCOUNT_NAME} 签到成功 / 今日已签到"
               else
                   echo "❌ ${ACCOUNT_NAME} 签到失败"
                   FAILED_ACCOUNTS="${FAILED_ACCOUNTS} ${ACCOUNT_NAME}"
 
                   echo "### ${ACCOUNT_NAME} 签到异常" >> "$LOG_FILE"
-                  echo "错误追踪: $LAST_ERROR" >> "$LOG_FILE"
                   echo "HTTP 状态码: $CHECKIN_HTTP_CODE" >> "$LOG_FILE"
                   echo "CODE: $CODE" >> "$LOG_FILE"
                   echo "MSG: $MSG" >> "$LOG_FILE"
-                  echo "解码数据: $DECODED_CHECKIN" >> "$LOG_FILE"
+                  echo "返回详情: $DECODED_CHECKIN" >> "$LOG_FILE"
                   echo "" >> "$LOG_FILE"
               fi
 
-          done < <(printf "%s\n" "$ACCOUNTS")
+          done < <(printf "%s\n" "$TOKENS")
 
-          ########################################
-          # 4. 汇总结果与触发报警
-          ########################################
           if [ -n "$FAILED_ACCOUNTS" ]; then
               echo "has_error=true" >> $GITHUB_OUTPUT
               echo "failed_accounts=$FAILED_ACCOUNTS" >> $GITHUB_OUTPUT
-
               {
                 echo "log_details<<EOF"
                 cat "$LOG_FILE"
                 echo "EOF"
               } >> $GITHUB_OUTPUT
-
-              echo "⚠️ 以下账号异常：$FAILED_ACCOUNTS"
               exit 1
           else
               echo "has_error=false" >> $GITHUB_OUTPUT
-              echo "🎉 所有账号签到成功！"
+              echo "🎉 所有账号处理完成！"
           fi
 
-      ########################################
-      # 5. 邮件提醒
-      ########################################
       - name: Send Failure Notification Mail
         if: failure() && steps.checkin_process.outputs.has_error == 'true'
         uses: dawidd6/action-send-mail@v4
@@ -239,15 +148,15 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "⚠️ SSPanel 签到异常提醒 - ${{ steps.checkin_process.outputs.failed_accounts }}"
-          to: ${{ secrets.MAIL_TO || secrets.MAIL_USERNAME }}
-          from: "SSPanel 自动签到系统 <${{ secrets.MAIL_USERNAME }}>"
+          subject: "⚠️ 签到异常提醒 - ${{ steps.checkin_process.outputs.failed_accounts }}"
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: "自动签到系统 <${{ secrets.MAIL_USERNAME }}>"
           body: |
-            SSPanel 自动签到异常通知
+            自动签到异常通知
 
             执行时间：${{ steps.checkin_process.outputs.current_time }}
             失败账号：${{ steps.checkin_process.outputs.failed_accounts }}
 
             --------------------------------------------------
-            排查日志详情：
+            详情：
             ${{ steps.checkin_process.outputs.log_details }}
