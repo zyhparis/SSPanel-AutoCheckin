@@ -148,13 +148,12 @@ jobs:
                       echo "CODE : $CODE"
                       echo "MSG  : $MSG"
 
-                      # 精准匹配：CODE 与 MSG 必须同时满足条件
+                      # 精准匹配：仅将 CODE: 0 (成功) 与 1028 (今天已签到) 判定为成功
                       if [[ "$CODE" == "0" && "$MSG" == "SUCCESS" ]] \
-                      || [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]] \
-                      || [[ "$CODE" == "1041" && "$MSG" == "CAN_NOT_SIGNUSE" ]]; then
+                      || [[ "$CODE" == "1028" && "$MSG" == "SIGN_USE_MULTY_TIMES" ]]; then
                           ACCOUNT_SUCCESS=true
                           LAST_ERROR=""
-                          break # 校验通过，直接跳出重试循环
+                          break # 校验通过，跳出重试循环
                       else
                           LAST_ERROR="业务状态码不符合预期（CODE: $CODE, MSG: $MSG）"
                       fi
